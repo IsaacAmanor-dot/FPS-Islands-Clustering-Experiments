@@ -134,7 +134,7 @@ def frozen():
     return manifest
 
 
-def parameters(method, cutoff, data=False, ligand="inputs/ligands.mol2"):
+def parameters(method, cutoff, data=False, ligand="inputs/ligands.mol2", data_mode="combined"):
     engine = "cartesian" if method == "cartesian" else "multigrid"
 
     values = [
@@ -195,7 +195,7 @@ def parameters(method, cutoff, data=False, ligand="inputs/ligands.mol2"):
 
     if data:
         values += [
-            ("similarity_island_fps_data_mode", "combined"),
+            ("similarity_island_fps_data_mode", data_mode),
             ("similarity_island_fps_data_file", "footprints.dat"),
         ]
 
@@ -344,7 +344,25 @@ def execute(directory, population, method):
                 check=True,
             )
 
-        read_report(directory / "run.out", population, method)
+        report = read_report(directory / "run.out", population, method)
+        input_values = dict(
+            line.split(None, 1)
+            for line in (directory / "run.in").read_text().splitlines()
+            if line.strip()
+        )
+        if input_values.get("similarity_island_fps_write_data") == "yes":
+            if input_values["similarity_island_fps_data_mode"] == "individual_islands":
+                files = list(directory.glob("footprints_*.dat"))
+                if len(files) != report["islands"]:
+                    raise ValueError("Expected one footprint file per island.")
+            else:
+                files = [directory / "footprints.dat"]
+
+            if not files or any(
+                not file.is_file() or file.stat().st_size == 0
+                for file in files
+            ):
+                raise ValueError("FPS footprint output is missing or empty.")
 
         wall, memory = (
             (directory / "resources.tsv").read_text().strip().split("\t")
@@ -505,7 +523,9 @@ def write_runs():
                     / f"repeat_{repeat:02d}" / f"cutoff_{cutoff}"
                 )
                 directory.mkdir(parents=True, exist_ok=False)
-                (directory / "run.in").write_text(parameters(method, cutoff))
+                (directory / "run.in").write_text(
+                    parameters(method, cutoff, data=True, data_mode="individual_islands")
+                )
 
     setup = json.loads(setup_path.read_text())
 

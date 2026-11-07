@@ -173,3 +173,15 @@ final statistics/figures.
 Generated grids, raw runs, temporary footprint exports and copied software
 are ignored. Grid checksums are retained without uploading grid binaries.
 No Git LFS is required. Preserve raw runs locally for auditing.
+
+## Footprint output
+
+Benchmark runs use `individual_islands`, writing one file per island,
+such as `footprints_0001.dat`, inside each cutoff and repeat directory.
+Execution checks that every island has a nonempty footprint file.
+
+Internal residue selection and numerical validation use combined files
+because their parsers require that format.
+
+Reported runtime includes footprint export and file writing.
+Raw run directories and their footprint files remain excluded from Git.
