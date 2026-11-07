@@ -1,0 +1,34 @@
+# Large generated files.
+*.nrg
+*.bmp
+/inputs/software/
+
+# Whole-receptor grid outputs.
+/inputs/whole_grid/*.mol2
+/inputs/whole_grid/*.out
+/inputs/whole_grid/*.log
+
+# Raw runs and footprint exports.
+/cartesian/selection_export/
+/*/validation/
+/*/runs/
+
+# Native generator intermediates.
+/*/grids/*.mol2
+/*/grids/*.out
+/*/grids/*.log
+/*/grids/temp*
+
+# Scheduler logs.
+/comparison/slurm_*
+/comparison/generation_*.out
+/comparison/generation_*.err
+
+# Archives and temporary files.
+/archive/
+*.tar.gz
+__pycache__/
+*.py[cod]
+*.swp
+*.swo
+*~
