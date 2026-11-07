@@ -20,6 +20,7 @@ The total is a sum of component distances, not one concatenated-vector norm.
 
 - `000.config.sh`: paths, cutoffs, repeats and concurrency.
 - `001.prepare_experiments.py`: freeze inputs, prepare runs and execute a method.
+- `001a.generate_multigrids.slurm`: submit grid generation and validation.
 - `002.run_experiments.slurm`: three array tasks, one exclusive node per method.
 - `003.compare_results.py`: statistics, membership comparisons and figures.
 - `004.generate_multigrids.py`: grid generation, selection and HB validation.
@@ -51,18 +52,11 @@ python3 001.prepare_experiments.py prepare
 Submit grid generation, residue selection and validation:
 
 ```bash
-sbatch \
-    --job-name=SI_grids \
-    --partition=rn-long-40core \
-    --nodes=1 \
-    --ntasks=1 \
-    --cpus-per-task=1 \
-    --mem=16G \
-    --time=1-00:00:00 \
-    --output=comparison/generation_%j.out \
-    --error=comparison/generation_%j.err \
-    --wrap='python3 -u 004.generate_multigrids.py'
+sbatch 001a.generate_multigrids.slurm
 ```
+
+Monitor `comparison/grid_generation.out` and
+`comparison/grid_generation.err`.
 
 Wait for successful completion and `comparison/setup_complete.json`.
 Then submit the three-method benchmark:
@@ -147,7 +141,9 @@ Each method writes `statistics.csv`.
 - Runtime, singleton, singleton-fraction and comparison-count figures.
 
 Singleton fraction means singleton islands divided by all islands.
-The library must contain unique, whitespace-free molecule titles.
+Repeated molecule titles are supported. Every input record is retained.
+Only the experiment copy receives unique record identifiers;
+inputs/ligand_records.tsv maps them to the original titles.
 Repeated membership must be identical within each method and cutoff.
 
 DOCK's reported time is total Analysis runtime, including initialization,
