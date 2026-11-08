@@ -61,7 +61,9 @@ def main():
                            **report, mean_island_size=statistics.mean(sizes),
                            median_island_size=statistics.median(sizes),
                            wall_seconds=record["process_wall_seconds"], peak_rss_kib=record["peak_rss_kib"],
-                           host=record["host"], cpu_model=record["cpu_model"], max_parallel=c["MAX_PARALLEL"])
+                           host=record["host"], cpu_model=record["cpu_model"],
+                           max_parallel=record.get("concurrent_cutoffs", c["MAX_PARALLEL"]),
+                           launcher=record.get("launcher", "direct"))
                 row["analysis_seconds_per_comparison"] = row["analysis_seconds"] / row["comparisons"]
                 method_rows.append(row)
             except Exception as error:

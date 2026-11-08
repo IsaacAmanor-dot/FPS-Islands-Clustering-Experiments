@@ -9,9 +9,9 @@ FPS for the same ordered 2ITY ligand library.
 - `multigrid_323/`: 322 individual residues plus a one-residue remainder.
 - `multigrid_20/`: 19 selected residues plus one 304-residue remainder.
 
-Each method runs cutoffs 0–25 once: 78 runs total, with no repeated sweeps.
+Each method runs cutoffs 0–9 once: 30 runs total, with no repeated sweeps.
 A three-task SLURM array assigns one exclusive node to each method.
-`MAX_PARALLEL` controls concurrent cutoffs within each method (default: two).
+All 10 cutoffs run concurrently within each method.
 The `%a` in experiment logs identifies the array task; no job-ID suffix is used.
 
 ## Scoring and output
@@ -23,12 +23,12 @@ one, using the same `inputs/whole_grid/whole` prefix for all three methods.
 FPS comparisons use Euclidean `total = dVDW + dES + dHB`, with retention `all`.
 MultiGrid interpolates VDW/ES and calculates geometric HB in Cartesian space.
 
-A Cartesian cutoff-10 run is written under `cartesian/runs/cutoff_10/`:
+A Cartesian cutoff-10 run is written under `cartesian/runs/cutoff_5/`:
 
-- `FPS_Island_cartesian_10.in`
-- `FPS_Island_cartesian_10.out`
-- `FPS_Island_cartesian_10_clustered.mol2`
-- `FPS_Island_cartesian_10_0001.dat`, and one `.dat` per additional island.
+- `FPS_Island_cartesian_5.in`
+- `FPS_Island_cartesian_5.out`
+- `FPS_Island_cartesian_5_clustered.mol2`
+- `FPS_Island_cartesian_5_0001.dat`, and one `.dat` per additional island.
 
 The other prefixes are `FPS_Island_multigrid_323_10` and
 `FPS_Island_multigrid_20_10`. All benchmark inputs use `individual_islands`.
@@ -49,7 +49,7 @@ sbatch 001a.generate_multigrids.slurm
 
 The setup script generates new grids or validates an existing complete grid set.
 It freezes the residue selection, validates HB mapping and writes benchmark inputs.
-After the setup job finishes successfully and reports 78 ready runs:
+After the setup job finishes successfully and reports 30 ready runs:
 
 ```bash
 sbatch 002.run_experiments.slurm
@@ -113,3 +113,16 @@ Preserve raw data locally for auditing; Git LFS is unnecessary.
 Submitted inputs are frozen as *.in.requested. DOCK runs on the matching
 *.in working copy, which it may rewrite with resolved parameters.
 Checksums verify submitted snapshots, not mutable runtime input files.
+
+## Concurrent cutoff allocation
+
+Each method runs cutoffs 0 through 9 once: 30 benchmark runs total.
+Each method receives one exclusive rn-long-40core node with 10 tasks,
+one CPU per task, and the node's full memory allocation (--mem=0).
+All 10 cutoffs run concurrently through separate exclusive srun steps.
+There are no repeated sweeps.
+
+Memory checks remain enabled. Each process loads its own grid arrays.
+Previous results are archived; grids and residue selection are preserved.
+Submit 002.run_experiments.slurm after applying the updater.
+Preparation and grid generation do not need to be repeated.

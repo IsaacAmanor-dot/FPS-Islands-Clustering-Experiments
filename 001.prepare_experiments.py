@@ -330,6 +330,14 @@ def execute(directory, population, method):
     command = ["/usr/bin/time", "-f", "%e\t%M", "-o", "resources.tsv",
                str(ROOT / "inputs/software/dock6"),
                "-i", input_file.name, "-o", output_file.name]
+    use_srun = directory.parent.name == "runs"
+    if use_srun:
+        if not environment.get("SLURM_JOB_ID"):
+            raise ValueError("Benchmark cutoffs require a SLURM allocation.")
+        command = [
+            "srun", "--exclusive", "--exact", "--nodes=1", "--ntasks=1",
+            "--cpus-per-task=1", "--cpu-bind=cores", "--mem=0", *command,
+        ]
     cpu = next((line.split(":", 1)[1].strip()
                 for line in Path("/proc/cpuinfo").read_text().splitlines()
                 if line.startswith("model name")), "unknown")
@@ -337,6 +345,10 @@ def execute(directory, population, method):
                   input_file=input_file.name, output_file=output_file.name,
                   status="failed", slurm_job_id=os.environ.get("SLURM_JOB_ID"),
                   slurm_array_task_id=os.environ.get("SLURM_ARRAY_TASK_ID"))
+    record.update(
+        launcher="srun" if use_srun else "direct",
+        concurrent_cutoffs=int(environment.get("SI_FPS_CONCURRENT", "1")),
+    )
     started = time.perf_counter()
     try:
         with (directory / "execution.log").open("w") as stream:
@@ -532,29 +544,143 @@ def write_runs():
     print(f"Prepared and checksummed {len(planned)} runs: one run per method and cutoff.")
 
 
+def concurrency_memory_check(method, count):
+    energy_files = [ROOT / "inputs/whole_grid/whole.nrg"]
+    if method != "cartesian":
+        components = json.loads((ROOT / method / "components.json").read_text())
+        energy_files += [
+            ROOT / method / "grids" / f"{name}.nrg"
+            for name in components["prefixes"]
+        ]
+
+    grid_bytes = sum(max(0, file.stat().st_size - 16) for file in energy_files)
+    estimated = count * (grid_bytes * 6 // 5 + 1024**3)
+
+    result = subprocess.run(
+        ["scontrol", "show", "job", os.environ["SLURM_JOB_ID"], "-o"],
+        check=True, capture_output=True, text=True, timeout=30,
+    )
+    allocation = re.search(r"(?:^|\s)(?:AllocTRES|TRES)=([^\s]+)", result.stdout)
+    if not allocation:
+        raise ValueError("Cannot determine allocated memory.")
+
+    memory = next(
+        (field[4:] for field in allocation[1].split(",")
+         if field.startswith("mem=")),
+        None,
+    )
+    if memory is None:
+        raise ValueError("Slurm did not report allocated memory.")
+
+    match = re.fullmatch(r"([0-9.]+)([KMGTPE]?)", memory.upper())
+    if not match:
+        raise ValueError(f"Unrecognized memory value: {memory}")
+
+    units = {
+        "": 1024**2, "K": 1024, "M": 1024**2,
+        "G": 1024**3, "T": 1024**4,
+        "P": 1024**5, "E": 1024**6,
+    }
+    allocated = int(float(match[1]) * units[match[2]])
+    physical = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
+    meminfo = dict(
+        line.split(":", 1)
+        for line in Path("/proc/meminfo").read_text().splitlines()
+    )
+    available = int(meminfo["MemAvailable"].split()[0]) * 1024
+    budget = min(physical, available, allocated if allocated else physical)
+
+    write_json(ROOT / method / "allocation.json", {
+        "method": method,
+        "concurrent_cutoffs": count,
+        "grid_bytes_per_process": grid_bytes,
+        "estimated_required_bytes": estimated,
+        "allocated_bytes": allocated,
+        "available_node_bytes": available,
+        "usable_budget_bytes": budget,
+    })
+
+    print(
+        f"{method}: {count} concurrent cutoffs; "
+        f"estimated memory {estimated / 1024**3:.1f} GiB; "
+        f"available budget {budget / 1024**3:.1f} GiB",
+        flush=True,
+    )
+    if estimated > budget:
+        raise ValueError(
+            "Insufficient memory for concurrent cutoffs. "
+            "Use a sufficiently large-memory node/allocation."
+        )
+
+
 def run_method(method):
     settings = frozen()["config"]
-    setup = json.loads((ROOT / "comparison/setup_complete.json").read_text())
+    setup = json.loads(
+        (ROOT / "comparison/setup_complete.json").read_text()
+    )
     if setup.get("stage") != "ready":
-        raise ValueError("Grid setup and input generation are not complete.")
+        raise ValueError("Setup is not ready.")
+
     for name, expected in setup["sha256"].items():
         if sha(ROOT / name) != expected:
             raise ValueError(f"Frozen setup file changed: {name}")
-    folder = ROOT / ("inputs/whole_grid" if method == "cartesian" else method + "/grids")
+
+    count = len(settings["cutoffs"])
+    if settings["MAX_PARALLEL"] != count:
+        raise ValueError("MAX_PARALLEL must equal the cutoff count.")
+
+    if not os.environ.get("SLURM_JOB_ID"):
+        raise ValueError("Submit through 002.run_experiments.slurm.")
+    if int(os.environ.get("SLURM_NTASKS", "0")) < count:
+        raise ValueError(f"Request at least {count} SLURM tasks.")
+    if int(os.environ.get("SLURM_CPUS_PER_TASK", "1")) != 1:
+        raise ValueError("Use one CPU per cutoff task.")
+
+    for cutoff in settings["cutoffs"]:
+        directory = ROOT / method / "runs" / f"cutoff_{cutoff}"
+        if (directory / "execution.json").exists():
+            raise ValueError(f"Archive existing results first: {directory}")
+
+    concurrency_memory_check(method, count)
+
+    folder = ROOT / (
+        "inputs/whole_grid"
+        if method == "cartesian"
+        else method + "/grids"
+    )
     with (folder / "grid_checksums.tsv").open() as stream:
         for row in csv.DictReader(stream, delimiter="\t"):
             if sha(folder / row["file"]) != row["sha256"]:
                 raise ValueError(f"Grid checksum differs: {row['file']}")
-    allocated = int(os.environ.get("SLURM_CPUS_PER_TASK", settings["MAX_PARALLEL"]))
-    if allocated < settings["MAX_PARALLEL"]:
-        raise ValueError("Allocated CPUs must be at least MAX_PARALLEL.")
-    with ThreadPoolExecutor(max_workers=settings["MAX_PARALLEL"]) as pool:
-        jobs = {pool.submit(execute, ROOT / method / "runs" / f"cutoff_{cutoff}",
-                            settings["EXPECTED_MOLECULES"], method): cutoff
-                for cutoff in settings["cutoffs"]}
+
+    os.environ["SI_FPS_CONCURRENT"] = str(count)
+    failures = []
+
+    with ThreadPoolExecutor(max_workers=count) as pool:
+        jobs = {
+            pool.submit(
+                execute,
+                ROOT / method / "runs" / f"cutoff_{cutoff}",
+                settings["EXPECTED_MOLECULES"],
+                method,
+            ): cutoff
+            for cutoff in settings["cutoffs"]
+        }
         for future in as_completed(jobs):
-            future.result()
-            print(f"{method} cutoff {jobs[future]}: PASS", flush=True)
+            cutoff = jobs[future]
+            try:
+                future.result()
+                print(f"{method} cutoff {cutoff}: PASS", flush=True)
+            except Exception as error:
+                failures.append(cutoff)
+                print(
+                    f"{method} cutoff {cutoff}: FAIL: {error}",
+                    flush=True,
+                )
+
+    if failures:
+        raise SystemExit(f"Failed cutoffs: {', '.join(failures)}")
+
 
 
 if __name__ == "__main__":
