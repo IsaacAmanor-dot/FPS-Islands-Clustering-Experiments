@@ -70,7 +70,7 @@ Use the same concurrency for all methods. A 323-component process needs roughly
 ## Reproducibility
 
 All 5,282 molecule records are retained in original order, including repeated
-original titles. The copied library has stable record IDs; the mapping is stored
+original titles. Original molecule titles are preserved. Record positions are stored
 in `inputs/ligand_records.tsv`. The original library is unchanged.
 
 Residue selection uses Cartesian footprints across the full fixed library.
@@ -126,3 +126,15 @@ Memory checks remain enabled. Each process loads its own grid arrays.
 Previous results are archived; grids and residue selection are preserved.
 Submit 002.run_experiments.slurm after applying the updater.
 Preparation and grid generation do not need to be repeated.
+
+
+## Original molecule names
+
+Original ZINC names and all duplicate molecule records are retained.
+No __SI suffixes are added to molecule titles.
+Runtime, island counts, singleton counts and footprint statistics remain available.
+Name-based membership ARI is left blank when duplicate titles prevent
+unambiguous matching between experiments.
+
+Removing earlier name suffixes is a text-only cleanup; recorded timings,
+coordinates, scores and grid files are unchanged.

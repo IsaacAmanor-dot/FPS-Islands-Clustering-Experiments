@@ -213,7 +213,7 @@ def footprint_rows(path):
             if not all(math.isfinite(value) for value in values):
                 raise ValueError("Nonfinite footprint.")
 
-            yield fields[2], int(fields[4]), values
+            yield (int(fields[0]), int(fields[1])), int(fields[4]), values
 
     if not header_found:
         raise ValueError(f"Missing footprint header: {path}")

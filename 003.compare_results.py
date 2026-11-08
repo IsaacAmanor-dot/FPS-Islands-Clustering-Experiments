@@ -15,6 +15,11 @@ R = e.ROOT
 
 
 def ari(a, b):
+    # Duplicate titles cannot identify corresponding records across clusterings.
+    if any(value > 1 for value in Counter(key[0] for key in a).values()) or any(
+        value > 1 for value in Counter(key[0] for key in b).values()
+    ):
+        return ""
     if a.keys() != b.keys():
         raise ValueError("ARI requires matching molecule records.")
     choose2 = lambda x: x * (x - 1) // 2

@@ -245,6 +245,7 @@ def read_report(path, expected_n, method=None):
     ]
 
     assignments = {}
+    title_counts = Counter()
     current = None
 
     for line in text.splitlines():
@@ -259,8 +260,8 @@ def read_report(path, expected_n, method=None):
             and fields[0].isdigit()
             and fields[-1] in ("HEAD", "MEMBER")
         ):
-            if current is None or fields[1] in assignments:
-                raise ValueError("Duplicate molecule or missing island label.")
+            if current is None:
+                raise ValueError("Missing island label.")
 
             scores = [float(value) for value in fields[2:8]]
 
@@ -273,7 +274,8 @@ def read_report(path, expected_n, method=None):
             ):
                 raise ValueError("FPS total differs from VDW + ES + HB.")
 
-            assignments[fields[1]] = current
+            title_counts[fields[1]] += 1
+            assignments[fields[1], title_counts[fields[1]]] = current
 
     if (
         population != expected_n
@@ -437,8 +439,7 @@ def prepare():
     def identify(match):
         index = len(records) + 1
         original = match.group(2).strip()
-        label = re.sub(r"\s+", "_", original) or "molecule"
-        identifier = f"{label}__SI{index:06d}"
+        identifier = original
         records.append((index, identifier, original))
         return match.group(1) + identifier + match.group(3)
     library, count = re.subn(
