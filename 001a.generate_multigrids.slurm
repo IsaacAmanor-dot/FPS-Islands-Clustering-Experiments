@@ -9,6 +9,10 @@
 #SBATCH --error=comparison/grid_generation.err
 
 set -euo pipefail
-
 cd "${SLURM_SUBMIT_DIR}"
-python3 -u 004.generate_multigrids.py
+
+if [[ -f inputs/whole_grid/whole.nrg && -f multigrid_323/components.json && -f multigrid_20/components.json ]]; then
+    python3 -u 004.generate_multigrids.py validate
+else
+    python3 -u 004.generate_multigrids.py
+fi

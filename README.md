@@ -1,183 +1,111 @@
-# 2ITY Similarity Island FPS comparison
+# FPS Islands clustering experiments
 
 Compare Cartesian FPS, 323-component MultiGrid FPS and 20-component MultiGrid
-FPS using the same ordered library, receptor, executable and cutoff schedule.
+FPS for the same ordered 2ITY ligand library.
 
-## Methods
+## Experiments
 
-- `cartesian/`: direct VDW, ES and HB footprints for 323 residues.
-- `multigrid_323/`: 322 individual residue grids plus a one-residue remainder.
-- `multigrid_20/`: 19 selected residue grids plus a 304-residue remainder.
+- `cartesian/`: direct VDW, ES and HB footprints for all 323 residues.
+- `multigrid_323/`: 322 individual residues plus a one-residue remainder.
+- `multigrid_20/`: 19 selected residues plus one 304-residue remainder.
 
-All methods use Euclidean `total = dVDW + dES + dHB`, unit weights,
-retention `all`, and `score_molecules no`.
+Each method runs cutoffs 0–25 once: 78 runs total, with no repeated sweeps.
+A three-task SLURM array assigns one exclusive node to each method.
+`MAX_PARALLEL` controls concurrent cutoffs within each method (default: two).
+The `%a` in experiment logs identifies the array task; no job-ID suffix is used.
 
-MultiGrid interpolates VDW/ES and calculates geometric HB interactions in
-Cartesian space, grouped into the corresponding grid components.
-The total is a sum of component distances, not one concatenated-vector norm.
+## Scoring and output
 
-## Files
+Every generated DOCK input enables `score_molecules yes`,
+`descriptor_score_primary yes`, and `descriptor_use_grid_score yes`.
+Direct `grid_score_primary` stays `no`. Descriptor grid scales and weight are
+one, using the same `inputs/whole_grid/whole` prefix for all three methods.
+FPS comparisons use Euclidean `total = dVDW + dES + dHB`, with retention `all`.
+MultiGrid interpolates VDW/ES and calculates geometric HB in Cartesian space.
 
-- `000.config.sh`: paths, cutoffs, repeats and concurrency.
-- `001.prepare_experiments.py`: freeze inputs, prepare runs and execute a method.
-- `001a.generate_multigrids.slurm`: submit grid generation and validation.
-- `002.run_experiments.slurm`: three array tasks, one exclusive node per method.
-- `003.compare_results.py`: statistics, membership comparisons and figures.
-- `004.generate_multigrids.py`: grid generation, selection and HB validation.
-- `inputs/`: copied molecular inputs, parameters, checksums and local tools.
-- `selection/`: residue ranking, selected/remainder lists and component mappings.
-- `comparison/`: setup times, validation results, aggregate CSVs and figures.
+A Cartesian cutoff-10 run is written under `cartesian/runs/cutoff_10/`:
 
-## Requirements
+- `FPS_Island_cartesian_10.in`
+- `FPS_Island_cartesian_10.out`
+- `FPS_Island_cartesian_10_clustered.mol2`
+- `FPS_Island_cartesian_10_0001.dat`, and one `.dat` per additional island.
 
-Python 3.9 or newer, Bash, GNU time at `/usr/bin/time`, SLURM, and the
-HB-enabled DOCK executable are required. Matplotlib is optional for figures.
-
-The native `grid`, `multigrid_fp_gen.py` and `mol2.py` utilities must be
-installed under the configured DOCK `bin/` directory.
-
-Use a working directory without whitespace and allow at least 15–20 GiB
-of free disk space for generated grids and run records.
+The other prefixes are `FPS_Island_multigrid_323_10` and
+`FPS_Island_multigrid_20_10`. All benchmark inputs use `individual_islands`.
+Internal selection/validation exports use combined files for parsing, while
+retaining descriptor rescoring and experiment-specific output names.
+Execution checks completion, rescored record counts and footprint file presence.
 
 ## Run
 
-Edit `000.config.sh` first. Run all commands from this directory.
-
-Prepare the fixed inputs:
+Edit paths in `000.config.sh`. Use Python 3.9+, Bash, GNU time, SLURM and the
+HB-enabled DOCK installation. Matplotlib is optional for figures.
+For a fresh experiment, run from this directory:
 
 ```bash
 python3 001.prepare_experiments.py prepare
-```
-
-Submit grid generation, residue selection and validation:
-
-```bash
 sbatch 001a.generate_multigrids.slurm
 ```
 
-Monitor `comparison/grid_generation.out` and
-`comparison/grid_generation.err`.
-
-Wait for successful completion and `comparison/setup_complete.json`.
-Then submit the three-method benchmark:
+The setup script generates new grids or validates an existing complete grid set.
+It freezes the residue selection, validates HB mapping and writes benchmark inputs.
+After the setup job finishes successfully and reports 78 ready runs:
 
 ```bash
 sbatch 002.run_experiments.slurm
 ```
 
-When all three array tasks finish:
+When every array task finishes:
 
 ```bash
 python3 003.compare_results.py
 ```
 
-Defaults: cutoffs 0–25 in unit steps, three repeats and two concurrent
-cutoffs per method, giving 234 benchmark runs.
+Do not rerun `prepare` on prepared inputs. After an archived-run reset, submit
+`001a.generate_multigrids.slurm` directly; existing grids are reused.
+If changing concurrency, request the same number of CPUs in `002`.
+Use the same concurrency for all methods. A 323-component process needs roughly
+10 GiB for grid energy data, plus other program data; account for concurrent processes.
 
-If changing `MAX_PARALLEL`, also change `--cpus-per-task` before preparation.
-Use the same concurrency for every method.
+## Reproducibility
 
-The array requests one exclusive node and all node memory per method.
-Each 323-component process loads roughly 10 GiB of energy grids, plus
-ligands and HB data. Adjust partition and time to local scheduling policy.
+All 5,282 molecule records are retained in original order, including repeated
+original titles. The copied library has stable record IDs; the mapping is stored
+in `inputs/ligand_records.tsv`. The original library is unchanged.
 
-## Residue selection
+Residue selection uses Cartesian footprints across the full fixed library.
+For each residue, calculate mean absolute VDW, ES and HB contributions.
+Normalize each component by its sum across residues, treating a zero denominator
+as zero. Sum the three normalized contributions with equal weights, select the
+19 highest scores, and break ties by increasing MOL2 residue ID. Save the complete
+ranking and remaining-residue list under `selection/`. Selection uses DOCK's
+six-decimal export and is specific to this library, not an independent test set.
 
-A separate Cartesian export calculates footprints for the fixed library.
+Grids share the box, 0.3 Å spacing, all-atom 6–9 VDW model, distance-dependent
+dielectric 4 and cutoff distance 9999 Å. Short relative GRID filenames avoid its
+legacy buffer limit. Grid generation follows the native workflow at
+https://github.com/IsaacAmanor-dot/Mult-Grid-Generation-in-Dock6 .
 
-For each residue:
-
-1. Calculate mean absolute VDW, ES and HB contributions across all molecules.
-2. Normalize each component by its sum across all receptor residues.
-3. Add the three normalized values with equal weights.
-4. Select the top 19 residues; break ties by increasing MOL2 residue ID.
-
-A component with a zero normalization denominator contributes zero.
-Selection uses DOCK's six-decimal footprint export. Selected IDs are then
-ordered numerically for the native generator. All remaining residues form
-component 20.
-
-The complete ranking and selected/remainder lists are saved under
-`selection/` and remain fixed across cutoffs and repeats.
-
-Selection uses the same library being clustered. This is a library-specific
-representation experiment, not an independent test-set evaluation.
-
-## Grid generation and validation
-
-Settings: common box, 0.3 Å spacing, all-atom model, 6–9 VDW potential,
-distance-dependent dielectric 4, and energy cutoff distance 9999 Å.
-
-Short relative GRID filenames avoid its legacy 81-byte filename buffers.
-A local checked copy of the native generator stops when a command fails.
-
-Generation follows the validated workflow at:
-https://github.com/IsaacAmanor-dot/Mult-Grid-Generation-in-Dock6
-
-Utilities are copied from the configured installation and checksummed.
-
-Setup verifies receptor partitions, atomic coordinates/charges, grid
-headers, common geometry, finite values and file checksums.
-
-The first ten ligands must reproduce Cartesian HB counts exactly for both
-MultiGrid mappings. VDW/ES interpolation differences are reported separately.
-Exact Cartesian identity of interpolated energies is not required.
-
-Preparation and execution refuse to overwrite completed inputs or run records.
-Use a fresh experiment directory for a changed configuration or interrupted
-setup, preserving failed logs for diagnosis.
+Revalidation checks grid headers, geometry, finite values, partitions and HB maps.
+It recomputes scored Cartesian selection and requires the same selected residues
+before reusing the 20-grid set. Both MultiGrid mappings must reproduce Cartesian
+HB counts on the validation subset; VDW/ES differences are reported separately.
+All prepared data, executable snapshots and benchmark inputs are checksummed.
 
 ## Results
 
-Each method writes `statistics.csv`.
-
-`comparison/` contains:
-
-- `all_runs.csv`: individual repeat results.
-- `summary.csv`: median runtime, repeat range and clustering statistics.
-- `membership_ari.csv`: pairwise adjusted Rand indices.
-- `setup_times.json`: grid generation and selection costs.
-- `footprint_validation.json`: HB checks and VDW/ES differences.
-- Runtime, singleton, singleton-fraction and comparison-count figures.
-
+Each method writes `statistics.csv`. `comparison/` contains all runs, summary,
+membership ARI, validation reports, setup costs and runtime/singleton figures.
 Singleton fraction means singleton islands divided by all islands.
-Repeated molecule titles are supported. Every input record is retained.
-Only the experiment copy receives unique record identifiers;
-inputs/ligand_records.tsv maps them to the original titles.
-Repeated membership must be identical within each method and cutoff.
 
-DOCK's reported time is total Analysis runtime, including initialization,
-input and output. It is not an isolated clustering timer.
-External process wall time and peak RSS are also recorded.
+Runtime is total Analysis time, including initialization, descriptor rescoring
+and file output. External wall time and peak RSS are also recorded.
+There is one observation per method/cutoff; no repeat variability is estimated.
+Hosts and CPU models are recorded. Concurrent workload and hardware differences
+can affect timings. Aggregation/interpolation can change membership and pair
+counts, so equal cutoffs do not guarantee equal clustering work or resolution.
+Grid generation and selection costs are reported separately.
 
-Measurements use the configured concurrent workload. Hosts and CPU models
-are recorded. Repeats on one node measure within-node variation and do not
-remove hardware differences between methods. A stricter follow-up should
-rotate methods across identical nodes or run them sequentially on the same
-reserved node with concurrency one.
-
-Residue aggregation and grid interpolation change footprint distances.
-Equal cutoffs therefore need not produce equal memberships or calculation
-counts. Interpret runtime alongside cluster statistics and comparison counts.
-Generation and selection costs are reported separately.
-
-## Git
-
-Track scripts, molecular/parameter inputs, selection records, manifests and
-final statistics/figures.
-
-Generated grids, raw runs, temporary footprint exports and copied software
-are ignored. Grid checksums are retained without uploading grid binaries.
-No Git LFS is required. Preserve raw runs locally for auditing.
-
-## Footprint output
-
-Benchmark runs use `individual_islands`, writing one file per island,
-such as `footprints_0001.dat`, inside each cutoff and repeat directory.
-Execution checks that every island has a nonempty footprint file.
-
-Internal residue selection and numerical validation use combined files
-because their parsers require that format.
-
-Reported runtime includes footprint export and file writing.
-Raw run directories and their footprint files remain excluded from Git.
+Track scripts, inputs, selection records, manifests and final statistics/figures.
+Generated grids, copied executables, raw runs and archives remain ignored.
+Preserve raw data locally for auditing; Git LFS is unnecessary.

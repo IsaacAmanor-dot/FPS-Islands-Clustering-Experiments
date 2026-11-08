@@ -12,7 +12,6 @@ LIGAND_FILE="/gpfs/projects/rizzo/iamanor/DOCK6_Development/Similarity_Island/Te
 
 FPS_CUTOFFS=(0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25)
 
-REPEATS=3
 MAX_PARALLEL=2
 
 EXPECTED_MOLECULES=5282

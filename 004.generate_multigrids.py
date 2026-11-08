@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import array
+import json
 import csv
 import importlib.util
 import math
@@ -182,14 +183,12 @@ def checked_system(command):
 def export(method, name, ligand, population):
     directory = ROOT / method / name
     directory.mkdir(exist_ok=False)
-
-    # A loose cutoff exports every molecule's footprint with few comparisons.
-    (directory / "run.in").write_text(
-        experiment.parameters(method, "1e12", True, ligand)
+    prefix = experiment.output_prefix(method, "1e12")
+    (directory / f"{prefix}.in").write_text(
+        experiment.parameters(method, "1e12", True, ligand, data_mode="combined")
     )
-
     experiment.execute(directory, population, method)
-    return directory / "footprints.dat"
+    return directory / f"{prefix}.dat"
 
 
 def footprint_rows(path):
@@ -602,5 +601,78 @@ def main():
     print("Setup complete. Submit 002.run_experiments.slurm.")
 
 
+def validate_existing():
+    settings = experiment.frozen()["config"]
+    if (ROOT / "comparison/setup_complete.json").exists():
+        raise ValueError("Setup already complete; preserve it before revalidation.")
+    with (ROOT / "selection/receptor_residue_map.tsv").open() as stream:
+        residues = list(csv.DictReader(stream, delimiter="\t"))
+    ids = [int(row["mol2_residue_id"]) for row in residues]
+    if len(ids) != 323:
+        raise ValueError("Expected 323 receptor residues.")
+    started = time.perf_counter()
+    geometry = validate_grids(ROOT / "inputs/whole_grid", ["whole"])
+    specifications = {}
+    for method, count in (("multigrid_323", 323), ("multigrid_20", 20)):
+        specification = json.loads((ROOT / method / "components.json").read_text())
+        prefixes, groups = specification["prefixes"], specification["groups"]
+        if len(prefixes) != count or len(groups) != count:
+            raise ValueError(f"Expected {count} components in {method}.")
+        if sorted(rid for group in groups for rid in group) != sorted(ids):
+            raise ValueError(f"Components do not partition the receptor: {method}")
+        mapped = [(i, rid) for i, group in enumerate(groups) for rid in group]
+        with (ROOT / "selection" / f"{method}_hb.tsv").open() as stream:
+            saved = [(int(row["grid_index"]), int(row["mol2_residue_id"]))
+                     for row in csv.DictReader(stream, delimiter="\t")]
+        if saved != mapped:
+            raise ValueError(f"HB mapping differs from grid components: {method}")
+        folder = ROOT / method / "grids"
+        validate_partition(folder, prefixes, groups)
+        if validate_grids(folder, prefixes) != geometry:
+            raise ValueError(f"Grid geometry differs: {method}")
+        specifications[method] = specification
+        print(f"{method}: existing grid files and partitions validated.", flush=True)
+
+    step = time.perf_counter()
+    selection_data = export("cartesian", "selection_export", "inputs/ligands.mol2",
+                            settings["EXPECTED_MOLECULES"])
+    ranking_path = ROOT / "selection/residue_importance.tsv"
+    previous_ranking = ranking_path.read_bytes()
+    selected = select_residues(selection_data, residues, settings["EXPECTED_MOLECULES"])
+    saved_selected = [group[0] for group in specifications["multigrid_20"]["groups"][:-1]]
+    if selected != saved_selected:
+        ranking_path.write_bytes(previous_ranking)
+        raise ValueError("Scored footprint selection changed; the 20-grid set must be reviewed before benchmarking.")
+    selection_seconds = time.perf_counter() - step
+    cartesian = export("cartesian", "validation", "inputs/validation_ligands.mol2", settings["validation_n"])
+    reports = {}
+    for method in experiment.METHODS[1:]:
+        output = export(method, "validation", "inputs/validation_ligands.mol2", settings["validation_n"])
+        reports[method] = compare_footprints(cartesian, output,
+                                           specifications[method]["groups"], ids, settings["validation_n"])
+        print(f"{method}: scored footprint validation passed.", flush=True)
+    experiment.write_json(ROOT / "comparison/footprint_validation.json", reports)
+    times_file = ROOT / "comparison/setup_times.json"
+    times = json.loads(times_file.read_text()) if times_file.exists() else {}
+    times.update(rescored_selection_seconds=selection_seconds,
+                 reuse_validation_seconds=time.perf_counter() - started)
+    experiment.write_json(times_file, times)
+    tracked = list((ROOT / "selection").glob("*"))
+    tracked += [ROOT / method / "components.json" for method in experiment.METHODS[1:]]
+    tracked += [ROOT / method / "grids/grid_checksums.tsv" for method in experiment.METHODS[1:]]
+    tracked += [ROOT / "inputs/whole_grid/grid_checksums.tsv"]
+    tracked += [ROOT / name for name in ("001.prepare_experiments.py", "001a.generate_multigrids.slurm",
+                                         "002.run_experiments.slurm", "003.compare_results.py", "004.generate_multigrids.py")]
+    experiment.write_json(ROOT / "comparison/setup_complete.json",
+                          {"sha256": {str(path.relative_to(ROOT)): experiment.sha(path) for path in tracked}})
+    experiment.write_runs()
+    print("Existing grids reused. Scored setup and all benchmark inputs are ready.", flush=True)
+
+
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["validate"]:
+        validate_existing()
+    elif not sys.argv[1:]:
+        main()
+    else:
+        raise SystemExit("Usage: 004.generate_multigrids.py [validate]")

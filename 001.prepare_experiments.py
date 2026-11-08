@@ -2,7 +2,7 @@
 """Prepare fixed inputs and run one method's cutoff experiments."""
 
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter
 import csv
 import hashlib
@@ -43,7 +43,7 @@ def config():
     # Let Bash interpret its own arrays and variable expansions.
     exports = (
         "DOCK_ROOT DOCK_BIN GRID_BIN RECEPTOR_FILE BOX_FILE LIGAND_FILE "
-        "REPEATS MAX_PARALLEL EXPECTED_MOLECULES EXPECTED_RESIDUES "
+        "MAX_PARALLEL EXPECTED_MOLECULES EXPECTED_RESIDUES "
         "VALIDATION_MOLECULES"
     )
 
@@ -74,7 +74,7 @@ def config():
     settings = {key: values[key] for key in paths}
 
     for key in (
-        "REPEATS", "MAX_PARALLEL", "EXPECTED_MOLECULES",
+        "MAX_PARALLEL", "EXPECTED_MOLECULES",
         "EXPECTED_RESIDUES", "VALIDATION_MOLECULES",
     ):
         settings[key] = int(values[key])
@@ -134,9 +134,15 @@ def frozen():
     return manifest
 
 
-def parameters(method, cutoff, data=False, ligand="inputs/ligands.mol2", data_mode="combined"):
-    engine = "cartesian" if method == "cartesian" else "multigrid"
+def output_prefix(method, cutoff):
+    label = str(cutoff).replace("-", "minus_").replace(".", "p")
+    return f"FPS_Island_{method}_{label}"
 
+
+def parameters(method, cutoff, data=True, ligand="inputs/ligands.mol2",
+               data_mode="individual_islands"):
+    engine = "cartesian" if method == "cartesian" else "multigrid"
+    prefix = output_prefix(method, cutoff)
     values = [
         ("conformer_search_type", "analysis"),
         ("ligand_atom_file", ROOT / ligand),
@@ -152,63 +158,63 @@ def parameters(method, cutoff, data=False, ligand="inputs/ligands.mol2", data_mo
         ("similarity_island_fps_score_type", "total"),
         ("similarity_island_fps_cutoff", cutoff),
         ("similarity_island_fps_vdw_rep_rad_scale", "1.0"),
-        (
-            "similarity_island_fps_receptor_filename",
-            ROOT / "inputs/receptor.mol2",
-        ),
+        ("similarity_island_fps_receptor_filename", ROOT / "inputs/receptor.mol2"),
     ]
-
     if engine == "cartesian":
         values += [
-            (
-                "similarity_island_fps_grid_prefix",
-                ROOT / "inputs/whole_grid/whole",
-            ),
+            ("similarity_island_fps_grid_prefix", ROOT / "inputs/whole_grid/whole"),
             ("similarity_island_fps_use_distance_dependent_dielectric", "yes"),
             ("similarity_island_fps_dielectric", "4.0"),
         ]
     else:
-        components = json.loads(
-            (ROOT / method / "components.json").read_text()
-        )
-
+        components = json.loads((ROOT / method / "components.json").read_text())
         values += [
-            (
-                "similarity_island_fps_number_of_grids",
-                len(components["prefixes"]),
-            ),
-            (
-                "similarity_island_fps_hbond_grid_map",
-                ROOT / "selection" / f"{method}_hb.tsv",
-            ),
+            ("similarity_island_fps_number_of_grids", len(components["prefixes"])),
+            ("similarity_island_fps_hbond_grid_map", ROOT / "selection" / f"{method}_hb.tsv"),
         ]
-
         values += [
-            (
-                f"similarity_island_fps_grid_prefix{index}",
-                ROOT / method / "grids" / prefix,
-            )
-            for index, prefix in enumerate(components["prefixes"])
+            (f"similarity_island_fps_grid_prefix{i}", ROOT / method / "grids" / name)
+            for i, name in enumerate(components["prefixes"])
         ]
-
     values.append(("similarity_island_fps_write_data", "yes" if data else "no"))
-
     if data:
         values += [
             ("similarity_island_fps_data_mode", data_mode),
-            ("similarity_island_fps_data_file", "footprints.dat"),
+            ("similarity_island_fps_data_file", prefix + ".dat" if data_mode == "combined" else prefix),
         ]
-
-    # Independent rescoring is disabled for every benchmark.
+    # Match descriptor-based grid scoring in the original FPS workflow.
     values += [
         ("similarity_island_retention_mode", "all"),
-        ("score_molecules", "no"),
+        ("score_molecules", "yes"),
+        ("contact_score_primary", "no"),
+        ("grid_score_primary", "no"),
+        ("gist_score_primary", "no"),
+        ("multigrid_score_primary", "no"),
+        ("dock3.5_score_primary", "no"),
+        ("continuous_score_primary", "no"),
+        ("footprint_similarity_score_primary", "no"),
+        ("pharmacophore_score_primary", "no"),
+        ("hbond_score_primary", "no"),
+        ("internal_energy_score_primary", "no"),
+        ("descriptor_score_primary", "yes"),
+        ("descriptor_use_grid_score", "yes"),
+        ("descriptor_use_grid_lig_efficiency", "no"),
+        ("descriptor_use_pharmacophore_score", "no"),
+        ("descriptor_use_tanimoto", "no"),
+        ("descriptor_use_hungarian", "no"),
+        ("descriptor_use_volume_overlap", "no"),
+        ("descriptor_use_gist", "no"),
+        ("descriptor_use_dock3.5", "no"),
+        ("descriptor_grid_score_rep_rad_scale", "1"),
+        ("descriptor_grid_score_vdw_scale", "1"),
+        ("descriptor_grid_score_es_scale", "1"),
+        ("descriptor_grid_score_grid_prefix", ROOT / "inputs/whole_grid/whole"),
+        ("descriptor_weight_grid_score", "1"),
         ("atom_model", "all"),
         ("vdw_defn_file", ROOT / "inputs/vdw_AMBER_parm99.defn"),
         ("flex_defn_file", ROOT / "inputs/flex.defn"),
-        ("ligand_outfile_prefix", "poses"),
+        ("ligand_outfile_prefix", prefix),
     ]
-
     return "".join(f"{key:<65} {value}\n" for key, value in values)
 
 
@@ -296,88 +302,58 @@ def read_report(path, expected_n, method=None):
 
 def execute(directory, population, method):
     directory = Path(directory)
-
     if (directory / "execution.json").exists():
-        raise ValueError(f"Existing run record: {directory}")
-
+        raise ValueError(f"Existing execution record: {directory}")
+    inputs = list(directory.glob("FPS_Island_*.in"))
+    if len(inputs) != 1:
+        raise ValueError(f"Expected exactly one FPS input: {directory}")
+    input_file = inputs[0]
+    output_file = input_file.with_suffix(".out")
+    values = dict(line.split(None, 1) for line in input_file.read_text().splitlines() if line.strip())
+    if (values.get("score_molecules") != "yes"
+        or values.get("descriptor_score_primary") != "yes"
+        or values.get("descriptor_use_grid_score") != "yes"
+        or values.get("grid_score_primary") != "no"):
+        raise ValueError("Expected descriptor-based grid rescoring in every input.")
+    expected_prefix = input_file.stem
+    if values["ligand_outfile_prefix"] != expected_prefix:
+        raise ValueError("Output prefix differs from experiment and cutoff name.")
     environment = os.environ.copy()
-    environment.update(
-        OMP_NUM_THREADS="1",
-        OPENBLAS_NUM_THREADS="1",
-        MKL_NUM_THREADS="1",
-    )
-
-    command = [
-        "/usr/bin/time", "-f", "%e\t%M", "-o", "resources.tsv",
-        str(ROOT / "inputs/software/dock6"),
-        "-i", "run.in", "-o", "run.out",
-    ]
-
-    cpu = next(
-        (
-            line.split(":", 1)[1].strip()
-            for line in Path("/proc/cpuinfo").read_text().splitlines()
-            if line.startswith("model name")
-        ),
-        "unknown",
-    )
-
-    record = {
-        "host": socket.gethostname(),
-        "cpu_model": cpu,
-        "command": command,
-        "status": "failed",
-        "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
-        "slurm_array_task_id": os.environ.get("SLURM_ARRAY_TASK_ID"),
-    }
+    environment.update(OMP_NUM_THREADS="1", OPENBLAS_NUM_THREADS="1", MKL_NUM_THREADS="1")
+    command = ["/usr/bin/time", "-f", "%e\t%M", "-o", "resources.tsv",
+               str(ROOT / "inputs/software/dock6"),
+               "-i", input_file.name, "-o", output_file.name]
+    cpu = next((line.split(":", 1)[1].strip()
+                for line in Path("/proc/cpuinfo").read_text().splitlines()
+                if line.startswith("model name")), "unknown")
+    record = dict(host=socket.gethostname(), cpu_model=cpu, command=command,
+                  input_file=input_file.name, output_file=output_file.name,
+                  status="failed", slurm_job_id=os.environ.get("SLURM_JOB_ID"),
+                  slurm_array_task_id=os.environ.get("SLURM_ARRAY_TASK_ID"))
     started = time.perf_counter()
-
     try:
         with (directory / "execution.log").open("w") as stream:
-            subprocess.run(
-                command,
-                cwd=directory,
-                env=environment,
-                stdin=subprocess.DEVNULL,
-                stdout=stream,
-                stderr=subprocess.STDOUT,
-                check=True,
-            )
-
-        report = read_report(directory / "run.out", population, method)
-        input_values = dict(
-            line.split(None, 1)
-            for line in (directory / "run.in").read_text().splitlines()
-            if line.strip()
-        )
-        if input_values.get("similarity_island_fps_write_data") == "yes":
-            if input_values["similarity_island_fps_data_mode"] == "individual_islands":
-                files = list(directory.glob("footprints_*.dat"))
-                if len(files) != report["islands"]:
-                    raise ValueError("Expected one footprint file per island.")
+            subprocess.run(command, cwd=directory, env=environment,
+                           stdin=subprocess.DEVNULL, stdout=stream,
+                           stderr=subprocess.STDOUT, check=True)
+        report = read_report(output_file, population, method)
+        rescored = re.findall(r"Molecules rescored:\s*(\d+)", output_file.read_text())
+        if rescored != [str(population)]:
+            raise ValueError("Rescoring did not cover every input record.")
+        if values.get("similarity_island_fps_write_data") == "yes":
+            prefix = directory / values["similarity_island_fps_data_file"]
+            if values["similarity_island_fps_data_mode"] == "individual_islands":
+                files = [prefix.parent / f"{prefix.name}_{i:04d}.dat"
+                         for i in range(1, report["islands"] + 1)]
             else:
-                files = [directory / "footprints.dat"]
-
-            if not files or any(
-                not file.is_file() or file.stat().st_size == 0
-                for file in files
-            ):
-                raise ValueError("FPS footprint output is missing or empty.")
-
-        wall, memory = (
-            (directory / "resources.tsv").read_text().strip().split("\t")
-        )
-
-        record.update(
-            status="passed",
-            process_wall_seconds=float(wall),
-            peak_rss_kib=int(memory),
-        )
-
+                files = [prefix]
+            if not files or any(not file.is_file() or file.stat().st_size == 0 for file in files):
+                raise ValueError("Expected FPS footprint output is missing or empty.")
+        wall, memory = (directory / "resources.tsv").read_text().strip().split("\t")
+        record.update(status="passed", process_wall_seconds=float(wall), peak_rss_kib=int(memory))
     except Exception as error:
         record["error"] = str(error)
         raise
-
     finally:
         record["driver_wall_seconds"] = time.perf_counter() - started
         write_json(directory / "execution.json", record)
@@ -432,17 +408,30 @@ def prepare():
         if not os.access(ROOT / "inputs/software" / name, os.X_OK):
             raise ValueError(f"Not executable: {name}")
 
-    ligands = mols(ROOT / "inputs/ligands.mol2")
-    titles = [molecule.splitlines()[1].strip() for molecule in ligands]
-
-    if (
-        len(ligands) != settings["EXPECTED_MOLECULES"]
-        or len(set(titles)) != len(titles)
-        or any(not title or len(title.split()) != 1 for title in titles)
-    ):
-        raise ValueError(
-            "Unexpected population or nonunique/whitespace-containing titles."
-        )
+    ligand_file = ROOT / "inputs/ligands.mol2"
+    ligands = mols(ligand_file)
+    if len(ligands) != settings["EXPECTED_MOLECULES"]:
+        raise ValueError("Unexpected molecule count.")
+    with ligand_file.open(newline="") as stream:
+        library = stream.read()
+    records = []
+    def identify(match):
+        index = len(records) + 1
+        original = match.group(2).strip()
+        label = re.sub(r"\s+", "_", original) or "molecule"
+        identifier = f"{label}__SI{index:06d}"
+        records.append((index, identifier, original))
+        return match.group(1) + identifier + match.group(3)
+    library, count = re.subn(
+        r"(?m)^(@<TRIPOS>MOLECULE[ \t]*\r?\n)([^\r\n]*)(\r?\n|$)", identify, library,
+    )
+    if count != len(ligands):
+        raise ValueError("Could not identify every MOL2 record.")
+    with ligand_file.open("w", newline="") as stream:
+        stream.write(library)
+    record_map = ROOT / "inputs/ligand_records.tsv"
+    table(record_map, ("record_index", "experiment_id", "original_title"), records)
+    ligands = mols(ligand_file)
 
     receptors = mols(ROOT / "inputs/receptor.mol2")
     if len(receptors) != 1:
@@ -488,7 +477,7 @@ def prepare():
     validation_file.write_text("".join(ligands[:validation_n]))
     settings["validation_n"] = validation_n
 
-    tracked = [ROOT / "000.config.sh", mapping, validation_file]
+    tracked = [ROOT / "000.config.sh", mapping, validation_file, record_map]
     tracked += [ROOT / "inputs" / name for name in sources]
 
     write_json(
@@ -496,6 +485,7 @@ def prepare():
         {
             "config": settings,
             "sources": sources,
+            "source_ligand_sha256": sha(Path(settings["LIGAND_FILE"])),
             "sha256": {
                 str(path.relative_to(ROOT)): sha(path) for path in tracked
             },
@@ -511,89 +501,51 @@ def prepare():
 def write_runs():
     settings = frozen()["config"]
     setup_path = ROOT / "comparison/setup_complete.json"
-
     if not setup_path.exists():
-        raise ValueError("Run 004.generate_multigrids.py first.")
-
-    for method in METHODS:
-        for repeat in range(1, settings["REPEATS"] + 1):
-            for cutoff in settings["cutoffs"]:
-                directory = (
-                    ROOT / method / "runs"
-                    / f"repeat_{repeat:02d}" / f"cutoff_{cutoff}"
-                )
-                directory.mkdir(parents=True, exist_ok=False)
-                (directory / "run.in").write_text(
-                    parameters(method, cutoff, data=True, data_mode="individual_islands")
-                )
-
+        raise ValueError("Complete grid generation and validation first.")
     setup = json.loads(setup_path.read_text())
-
+    planned = {}
     for method in METHODS:
-        for path in (ROOT / method / "runs").rglob("run.in"):
-            setup["sha256"][str(path.relative_to(ROOT))] = sha(path)
-
+        for cutoff in settings["cutoffs"]:
+            directory = ROOT / method / "runs" / f"cutoff_{cutoff}"
+            if directory.exists():
+                raise ValueError(f"Existing run directory: {directory}")
+            prefix = output_prefix(method, cutoff)
+            path = directory / f"{prefix}.in"
+            planned[path] = parameters(method, cutoff)
+    for path, text in planned.items():
+        path.parent.mkdir(parents=True, exist_ok=False)
+        path.write_text(text)
+        setup["sha256"][str(path.relative_to(ROOT))] = sha(path)
+    setup["stage"] = "ready"
+    setup["benchmark_runs"] = len(planned)
     write_json(setup_path, setup)
-    print("Prepared and checksummed all benchmark inputs.")
+    print(f"Prepared and checksummed {len(planned)} runs: one run per method and cutoff.")
 
 
 def run_method(method):
     settings = frozen()["config"]
-    setup = json.loads(
-        (ROOT / "comparison/setup_complete.json").read_text()
-    )
-
+    setup = json.loads((ROOT / "comparison/setup_complete.json").read_text())
+    if setup.get("stage") != "ready":
+        raise ValueError("Grid setup and input generation are not complete.")
     for name, expected in setup["sha256"].items():
         if sha(ROOT / name) != expected:
-            raise ValueError(f"Setup input changed: {name}")
-
-    # Grid verification occurs outside benchmark timers.
-    folder = ROOT / (
-        "inputs/whole_grid"
-        if method == "cartesian"
-        else method + "/grids"
-    )
-
+            raise ValueError(f"Frozen setup file changed: {name}")
+    folder = ROOT / ("inputs/whole_grid" if method == "cartesian" else method + "/grids")
     with (folder / "grid_checksums.tsv").open() as stream:
         for row in csv.DictReader(stream, delimiter="\t"):
             if sha(folder / row["file"]) != row["sha256"]:
                 raise ValueError(f"Grid checksum differs: {row['file']}")
-
-    allocated = int(
-        os.environ.get("SLURM_CPUS_PER_TASK", settings["MAX_PARALLEL"])
-    )
+    allocated = int(os.environ.get("SLURM_CPUS_PER_TASK", settings["MAX_PARALLEL"]))
     if allocated < settings["MAX_PARALLEL"]:
         raise ValueError("Allocated CPUs must be at least MAX_PARALLEL.")
-
-    for repeat in range(1, settings["REPEATS"] + 1):
-        # All methods use the same rotated cutoff order.
-        cutoffs = settings["cutoffs"]
-        offset = (repeat - 1) % len(cutoffs)
-        cutoffs = cutoffs[offset:] + cutoffs[:offset]
-
-        with ThreadPoolExecutor(
-            max_workers=settings["MAX_PARALLEL"]
-        ) as pool:
-            jobs = [
-                (
-                    cutoff,
-                    pool.submit(
-                        execute,
-                        ROOT / method / "runs"
-                        / f"repeat_{repeat:02d}" / f"cutoff_{cutoff}",
-                        settings["EXPECTED_MOLECULES"],
-                        method,
-                    ),
-                )
-                for cutoff in cutoffs
-            ]
-
-            for cutoff, job in jobs:
-                job.result()
-                print(
-                    f"{method} repeat {repeat} cutoff {cutoff}: PASS",
-                    flush=True,
-                )
+    with ThreadPoolExecutor(max_workers=settings["MAX_PARALLEL"]) as pool:
+        jobs = {pool.submit(execute, ROOT / method / "runs" / f"cutoff_{cutoff}",
+                            settings["EXPECTED_MOLECULES"], method): cutoff
+                for cutoff in settings["cutoffs"]}
+        for future in as_completed(jobs):
+            future.result()
+            print(f"{method} cutoff {jobs[future]}: PASS", flush=True)
 
 
 if __name__ == "__main__":
@@ -611,3 +563,4 @@ if __name__ == "__main__":
         raise SystemExit(
             "Usage: 001.prepare_experiments.py prepare|write-runs|run METHOD"
         )
+
