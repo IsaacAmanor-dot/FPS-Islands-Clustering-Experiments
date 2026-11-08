@@ -308,6 +308,13 @@ def execute(directory, population, method):
     if len(inputs) != 1:
         raise ValueError(f"Expected exactly one FPS input: {directory}")
     input_file = inputs[0]
+    snapshot = input_file.with_name(input_file.name + ".requested")
+    if not snapshot.exists():
+        if directory.parent.name == "runs":
+            raise ValueError(f"Missing submitted-input snapshot: {snapshot}")
+        shutil.copyfile(input_file, snapshot)
+    # DOCK rewrites its input; preserve submitted parameters separately.
+    shutil.copyfile(snapshot, input_file)
     output_file = input_file.with_suffix(".out")
     values = dict(line.split(None, 1) for line in input_file.read_text().splitlines() if line.strip())
     if (values.get("score_molecules") != "yes"
@@ -516,7 +523,9 @@ def write_runs():
     for path, text in planned.items():
         path.parent.mkdir(parents=True, exist_ok=False)
         path.write_text(text)
-        setup["sha256"][str(path.relative_to(ROOT))] = sha(path)
+        snapshot = path.with_name(path.name + ".requested")
+        snapshot.write_text(text)
+        setup["sha256"][str(snapshot.relative_to(ROOT))] = sha(snapshot)
     setup["stage"] = "ready"
     setup["benchmark_runs"] = len(planned)
     write_json(setup_path, setup)

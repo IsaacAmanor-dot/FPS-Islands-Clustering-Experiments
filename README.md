@@ -109,3 +109,7 @@ Grid generation and selection costs are reported separately.
 Track scripts, inputs, selection records, manifests and final statistics/figures.
 Generated grids, copied executables, raw runs and archives remain ignored.
 Preserve raw data locally for auditing; Git LFS is unnecessary.
+
+Submitted inputs are frozen as *.in.requested. DOCK runs on the matching
+*.in working copy, which it may rewrite with resolved parameters.
+Checksums verify submitted snapshots, not mutable runtime input files.
